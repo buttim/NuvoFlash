@@ -5,9 +5,6 @@
 __sbit __at(0x90+4) P14;
 
 __sbit __at(0xB0+3) P33;
-__sbit __at(0x96+3) P33_MOD_OC;
-__sbit __at(0x97+3) P33_MOD_PU;
-
 __sbit __at(0xB0+4) P34;
 __sbit __at(0xB0+5) P35;
 
@@ -18,10 +15,9 @@ __sbit __at(0xB0+5) P35;
 #define GPIO_DAT	33//20
 #define GPIO_CLK	34//26
 #define GPIO_RST	35//21
-#define TRIGGER   13
 
 #define N76E003_DEVID	0x3650
-
+#define NUVOTON_CID 0xDA
 #define FLASH_SIZE	(18 * 1024)
 #define LDROM_MAX_SIZE	(4 * 1024)
 
@@ -43,11 +39,11 @@ __sbit __at(0xB0+5) P35;
 int clkDelay=SLOW;
 
 #define usleep(x) delayMicroseconds(x)
-#define pgm_get_dat() (P33)//((P3&0x8)!=0)//digitalRead(GPIO_DAT)//
-#define pgm_set_rst(val) {P35=(val);}//if (val) P3|=0x20; else P3&=~0x20;//digitalWrite(GPIO_RST,val)//
-#define pgm_set_dat(val) {P33=(val);}//if (val) P3|=0x8; else P3&=~0x8;//digitalWrite(GPIO_DAT,val)//
-#define pgm_set_clk(val) {P34=(val); if (clkDelay>0) usleep(clkDelay);}// {if (val) P3|=0x10; else P3&=~0x10; if (clkDelay>0) usleep(clkDelay); }//digitalWrite(GPIO_CLK,val)//
-#define pgm_dat_dir(val) {if (val) {P3_MOD_OC|=0x8;P3_DIR_PU|=0x8;} else {P3_MOD_OC&=~0x8;P3_DIR_PU&=~0x8;}}//pinMode(GPIO_DAT,val?OUTPUT:INPUT)//
+#define pgm_get_dat() (P33)
+#define pgm_set_rst(val) {P35=(val);}
+#define pgm_set_dat(val) {P33=(val);}
+#define pgm_set_clk(val) {P34=(val); if (clkDelay>0) usleep(clkDelay);}
+#define pgm_dat_dir(val) {if (val) {P3_MOD_OC|=0x08;P3_DIR_PU|=0x8;} else {P3_MOD_OC&=~0x8;P3_DIR_PU&=~0x8;}}
 #define pgm_deinit() pgm_set_rst(1)
 #define fprintf(a,...) USBSerial_print(__VA_ARGS__)
 
@@ -229,75 +225,112 @@ void icp_page_erase(__xdata uint32_t addr)
 
 void setup() {
   pinMode(14,OUTPUT);
-  pinMode(TRIGGER,OUTPUT);
   P3_MOD_OC|=0x38;  //DAT RST and CLK output only
   P3_DIR_PU|=0x38;
-  P3&=~0x38;        //DAT RST and CLCK low
+}
+
+void dump(uint8_t *p,size_t len) {
+  for (int i=0;i<len;i++) {
+    if (p[i]<16) USBSerial_print("0");
+    USBSerial_print(p[i],HEX);
+    USBSerial_print(" ");
+    if (i%16==15)
+      USBSerial_print("\n");
+  }
+}
+
+int readTimeout(int msTimeout) {
+  unsigned long t0=millis();
+  while (millis()-t0<msTimeout) {
+    if (USBSerial_available())
+    return USBSerial_read();
+  }
+  return -1;
 }
 
 void loop() {
-  __xdata static uint8_t buf[32];
+  int i;
+  __xdata static uint8_t buf[128];
 
-  P14=(millis()&0x3FF)<20;
+  P14=(millis()&0x3FF)<50;
 
-  if (digitalRead(32)==HIGH) {
-    if (!USBSerial_available()) return;
-    if (USBSerial_read()!='g') {
-      USBSerial_println("premi -> g <- per lanciare test");
-      return;
+  if (!USBSerial_available()) return;
+
+  char cmd=USBSerial_read();
+  if (cmd!='R' && cmd!='W' && cmd!='X') return;
+  
+  int mem=0;
+  __xdata uint32_t addr=0;
+  if (cmd!='X') {
+    mem=readTimeout(1000);
+    if (mem!='A' && mem!='L' && mem!='C') return;
+    if (mem!='C') {
+      int n=readTimeout(1000);
+      if (n<0) return;
+      addr=n;
+      n=readTimeout(1000);
+      if (n<0) return;
+      addr=addr*256+n;
     }
   }
 
-  digitalWrite(TRIGGER,HIGH);
+  if (cmd=='W') {
+    int len=mem=='C'?5:sizeof buf;
+
+    for (i=0;i<len;i++)
+      buf[i]=readTimeout(20);    
+  }
+
   clkDelay=SLOW;
+
+  pgm_dat_dir(1);
+  pgm_set_dat(0);
+  pgm_set_clk(0);
+  pgm_set_rst(0);
+
   icp_init();
   clkDelay=FAST;
 
   usleep(120);
 
+  //TODO: gestiore errori; controllo dimensioni APROM e LDROM
+
   uint16_t devid = icp_read_device_id();
   uint8_t cid = icp_read_cid();
 
-  /*digitalWrite(TRIGGER,HIGH);
-  icp_dump_config();
-  digitalWrite(TRIGGER,LOW);*/
+  if (cid!=NUVOTON_CID || devid!=N76E003_DEVID) {
+    return;
+  }
 
-  //USBSerial_print("devid: 0x");
-  //USBSerial_println(devid,HEX);
+  __xdata uint8_t cfg1;
+  icp_read_flash(CFG_FLASH_ADDR+1, 1, &cfg1);
+  int ldRomSize=(7-(cfg1&7))*1024;
+  if (ldRomSize>4*1024) ldRomSize=4*1024;
 
-  //uint32_t uid = icp_read_uid();
-  //uint32_t ucid = icp_read_ucid();
-  //USBSerial_print("cid: 0x");
-  //USBSerial_println(cid,HEX);
-  //USBSerial_print("uid: 0x");
-  //USBSerial_println(uid,HEX);
-  //USBSerial_print("ucid: 0x");
-  //USBSerial_println(ucid,HEX);
+  int len=0;
 
-  usleep(260);
-  icp_read_flash(CFG_FLASH_ADDR, CFG_FLASH_LEN, buf);
-  usleep(760);
+  switch(mem) {
+    case 'C': len=CFG_FLASH_LEN; addr=CFG_FLASH_ADDR; break;
+    case 'L': addr+=18*1024-ldRomSize; //FALL THROUGH!
+    case 'A': len=sizeof buf; break;
+  }
 
-  icp_read_flash(0,sizeof buf,buf);
+  switch (cmd) {
+    case 'X':
+      icp_mass_erase();
+      break;
+    case 'R':
+      icp_read_flash(addr, len, buf);
+      for (i=0;i<len;i+=32) {
+        USBSerial_print_n(buf+i,len-i<32?len:32);
+        USBSerial_flush();
+      }
+      break;
+    case 'W':
+      icp_write_flash(addr,len,buf);
+      break;
+  }
 
   icp_exit();
   pgm_deinit();
-  digitalWrite(TRIGGER,LOW);
-
-  USBSerial_print("devid: 0x");
-  USBSerial_println(devid,HEX);
-  USBSerial_print("cid: 0x");
-  USBSerial_println(cid,HEX);
-
-  for (int i=0;i<sizeof buf;i++) {
-    if (buf[i]<16)
-      USBSerial_print("0");
-    USBSerial_print(buf[i],HEX);
-    USBSerial_print(" ");
-    if (i==15)
-      USBSerial_print("\n");
-  }
-  USBSerial_print("\n");
-  USBSerial_print("\n");
-  while (digitalRead(32)==LOW);
 }
