@@ -1,4 +1,4 @@
-//!gcc -I . -L . "%file%" -o "%name%" -lserialport
+//!gcc -Wall -I . -L . "%file%" -o "%name%" -lserialport
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
@@ -7,9 +7,15 @@
 #include <getopt.h>
 #include <libserialport.h>
 
-typedef enum {APROM,LDROM,CONFIG} Mem;
-Mem mem;
+#define PAGE_SIZE 128
+#define MAX_PATH 260
 
+typedef enum {APROM,LDROM,CONFIG} Mem;
+
+Mem mem;
+struct sp_port *port;
+uint8_t buf[PAGE_SIZE];
+char filename[MAX_PATH];
 void usage() {
   fputs("Usage: nuvoflash <options> [file.bin|hex_value]\n",stderr);
   fputs("<mem> must be one of APROM, LDROM, CONFIG\n",stderr);
@@ -23,18 +29,121 @@ void usage() {
 }
 
 Mem memFromString(const char *s) {
-	if (strcmp(s,"APROM"))
-	  mem=APROM;
-	else if (strcmp(s,"LDROM"))
-	  mem=LDROM;
-	else if (strcmp(s,"CONFIG"))
-	  mem=CONFIG;
-	else {
-	  fprintf(stderr,"Invalid value '%s', must be APROM, LDROM or CONFIG\n",s);
-	  usage();
-	}
+  if (strcmp(s,"APROM")==0)
+    return APROM;
+  else if (strcmp(s,"LDROM")==0)
+    return LDROM;
+  else if (strcmp(s,"CONFIG")==0)
+    return CONFIG;
+  else {
+    fprintf(stderr,"Invalid value '%s', must be APROM, LDROM or CONFIG\n",s);
+    usage();
+  }
+  return -1;
 }
+
+bool selectSerialPort(size_t len,char portName[len]) {
+  struct sp_port **port_list;
+  enum sp_return res=sp_list_ports(&port_list);
+
+  if (res!=SP_OK) return false;
+  for (int i = 0; port_list[i] != NULL; i++) {
+    int vid,pid;
+    res=sp_get_port_usb_vid_pid(port_list[i],&vid,&pid);
+    if (res!=SP_OK) continue;
+    if (pid==0xc550 && vid==0x1209) {
+      strncpy(portName,sp_get_port_name(port_list[i]),len);
+      fprintf(stderr,"Serial port automatically selected (%s)\n",
+	sp_get_port_description(port_list[i]));
+      return true;
+    }
+  }
+  sp_free_port_list(port_list);
+  return false;
+}
+
+bool readBlock(uint8_t mem,int address,size_t len,uint8_t buf[len]) {
+  uint8_t err, cmd[4];
   
+  cmd[0]='R';
+  cmd[1]=mem;
+  cmd[2]=address>>8;
+  cmd[3]=address;
+  sp_blocking_write(port,cmd,4,500);
+  int nBytesRead=sp_blocking_read(port,&err,1,500);
+  if (nBytesRead!=1) {
+    fprintf(stderr,"Programmer is not responding\n");
+    return false;
+  }
+  if (err!=0) {
+    fprintf(stderr,"Programmer returned error code %d\n",err);
+    return false;
+  }
+  nBytesRead=sp_blocking_read(port,buf,len,500);
+  if (nBytesRead!=len) {
+    fprintf(stderr,"Programmer is not responding\n");
+    return false;
+  }
+  return true;
+}
+
+bool writeBlock(int address,size_t len,const uint8_t buf[len],bool isLDROM) {
+  //TODO
+  return true;
+}
+
+void readAPROM(const char *filename) {
+  FILE *f=fopen(filename,"wb");
+  if (f==NULL) {
+    fprintf(stderr,"Cannot write to file %s\n",filename);
+    exit(1);
+  }
+  for (int i=0;i<18*1024;i+=PAGE_SIZE) {
+    if (!readBlock('A',i,PAGE_SIZE,buf))
+      break;
+    fwrite(buf,PAGE_SIZE,1,f);
+  }
+  fclose(f);
+}
+
+void readLDROM(const char *filename) {
+  //TODO
+}
+
+void writeAPROM(const char *filename) {
+  //TODO
+}
+
+void writeLDROM(const char *filename) {
+  //TODO
+}
+
+void readConfig() {
+  if (!readBlock('C',0,5,buf)) return;
+  for (int i=0;i<5;i++) 
+    printf("%02X",buf[i]);
+  putchar('\n');
+}
+
+void writeConfig(const uint8_t cfg[]) {
+  writeBlock(0xC0000,5,cfg,false);
+}
+
+void massErase() {
+  uint8_t err;
+  
+  sp_blocking_write(port,"X",1,500);
+  
+  if (sp_blocking_read(port,&err,1,500)!=1) {
+    fprintf(stderr,"Programmer is not responding\n");
+    exit(1);
+  }
+  if (err!=0) {
+    fprintf(stderr,"Programmer returned error code %d\n",err);
+    exit(1);
+  }
+}
+
 int main(int argc, char *argv[]) {
   char opt;
   int opt_index;
@@ -68,67 +177,85 @@ int main(int argc, char *argv[]) {
 	usage();
     }
   }
-  
+
   if (!readOpt && !writeOpt && !massEraseOpt) {
     fputs("Exactly one of read, write, erase must be specified\n",stderr);
     usage();
   }
-  else if (readOpt && (writeOpt || massEraseOpt) || writeOpt && massEraseOpt) {
+  else if ((readOpt && (writeOpt || massEraseOpt)) || (writeOpt && massEraseOpt)) {
     fputs("Only one of read, write, erase is allowed\n",stderr);
     usage();
   }
   
-  if (argc!=1 && optind!=argc-1) {
-    fputs("Too many arguments\n",stderr);
+  if ((mem!=CONFIG || writeOpt) && argc!=1 && optind!=argc-1) {
+    fputs("Missing arguments\n",stderr);
     usage();
   }
   
-  puts(argv[argc-1]);
-  
-  struct sp_port **port_list;
-
-  sp_list_ports(&port_list);
-  for (int i = 0; port_list[i] != NULL; i++) {
-    int vid,pid;
-    sp_get_port_usb_vid_pid(port_list[i],&vid,&pid);
-    printf("%s\t%04X:%04X %s\n",sp_get_port_name(port_list[i]),vid,pid,
-      sp_get_port_description(port_list[i]));
+  if (!portOpt) {
+    if (!selectSerialPort(sizeof portName-1,portName)) {
+      fputs("Serial port not found, try using the -p/--port option\n",stderr);
+      exit(1);
+    }
   }
-  sp_free_port_list(port_list);
-  return 0;
   
-  
-  struct sp_port *port;
-  enum sp_return res=sp_get_port_by_name("COM26",&port);
-  printf("%d\n",res);
-  
-  int vid,pid;
-  res=sp_get_port_usb_vid_pid(port,&vid,&pid);
-  printf("%d vid=%08X pid=%08X %s\n",res,vid,pid,sp_get_port_description(port));
-  
+  enum sp_return res=sp_get_port_by_name(portName,&port);
+  if (res!=SP_OK) {
+    fputs("The serial port does not exist, exiting\n",stderr);
+    exit(1);
+  }
   res=sp_open(port,SP_MODE_READ_WRITE);
-  printf("%d\n",res);
-  res=sp_set_baudrate(port, 115200);
-  printf("%d\n",res);
-  
-  unsigned char cmd[]="RA\0\0";
-  for (int j=0;j<18*1024;j+=128) {
-    cmd[2]=j/256;
-    cmd[3]=j&0xFF;
-    res=sp_blocking_write(port,cmd,4,500);
-    //printf("%d\n",res);
-    
-    uint8_t buf[128];
-    memset(buf,0,sizeof buf);
-    res=sp_blocking_read(port,buf,128,500);
-    //printf("%d\n",res);
-    
-    /*for (int i=0;i<128;i++) {
-      printf("%02X ",buf[i]);
-      if (i%16==15)
-	putchar('\n');
-    }*/
+  if (res!=SP_OK) {
+    fputs("Cannot open serial port, exiting\n",stderr);
+    exit(1);
   }
-  putchar('\n');
+  res=sp_set_baudrate(port, 115200);
+  if (res!=SP_OK) {
+    fputs("Cannot set baud rate, exiting\n",stderr);
+    exit(1);
+  }
+
+  char *p,*end;
+  unsigned long long l=0;
+  if (readOpt) 
+    switch (mem) {
+      case CONFIG:
+	readConfig();
+	break;
+      case APROM:
+	readAPROM(argv[argc-1]);
+	break;
+      case LDROM:
+	readLDROM(argv[argc-1]);
+    }
+    else if (writeOpt) 
+      switch (mem) {
+	case CONFIG:
+	  p=argv[argc-1];
+	  if (strlen(p)!=10) {
+	    fprintf(stderr,"config bytes string length wrong (%llu insted of 10)\n",strlen(p));
+	    exit(1);
+	  }
+	  l=strtoull(p,&end,16);
+	  if (*end!=0) {
+	    fprintf(stderr,"config bytes string contains invalid characters\n");
+	    exit(1);
+	  }
+	  for (int i=4;i>=0;i--) {
+	    buf[i]=l;
+	    l>>=8;
+	  }
+	  writeConfig(buf);
+	  break;
+	case APROM:
+	  writeAPROM(argv[argc-1]);
+	  break;
+	case LDROM:
+	  writeLDROM(argv[argc-1]);
+      }
+    else if (massEraseOpt)
+      massErase();
+    
+  sp_close(port);
   return 0;
 }
