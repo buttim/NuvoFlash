@@ -237,7 +237,7 @@ int readTimeout(int msTimeout) {
 }
 
 bool inProg=false;
-__xdata unsigned long tStartProg=0;
+__xdata unsigned long tLastProg=0;
 __xdata int ldRomSize;
 
 void loop() {
@@ -246,9 +246,9 @@ void loop() {
 
   P14=(millis()&0x3FF)<50;
 
-  if (inProg && millis()-tStartProg>1000) {
+  if (inProg && millis()-tLastProg>1000) {
     inProg=false;
-    tStartProg=0;
+    tLastProg=0;
 
     icp_exit();
     pgm_deinit();
@@ -321,8 +321,8 @@ void loop() {
     if (ldRomSize>4*1024) ldRomSize=4*1024;
 
     inProg=true;
-    tStartProg=millis();
   }
+  tLastProg=millis();
 
   int len=0;
 
