@@ -36,16 +36,25 @@ __sbit __at(0xB0+5) P35;
 #define SLOW 52
 #define FAST 0
 
-int clkDelay=SLOW;
+#define TRIGGER 12
+
+__xdata int clkDelay=SLOW;
 
 #define usleep(x) delayMicroseconds(x)
 #define pgm_get_dat() (P33)
 #define pgm_set_rst(val) {P35=(val);}
 #define pgm_set_dat(val) {P33=(val);}
-#define pgm_set_clk(val) {P34=(val); if (clkDelay>0) usleep(clkDelay);}
-#define pgm_dat_dir(val) {if (val) {P3_MOD_OC|=0x08;P3_DIR_PU|=0x8;} else {P3_MOD_OC&=~0x8;P3_DIR_PU&=~0x8;}}
+#define pgm_set_clk(val) \
+  _Pragma("save")\
+  _Pragma("disable_warning 110")\
+  {P34=(val); if (clkDelay>0) usleep(clkDelay);}\
+  _Pragma("restore")
+#define pgm_dat_dir(val) \
+  _Pragma("save")\
+  _Pragma("disable_warning 126")\
+  {if (val) {P3_MOD_OC|=0x08;P3_DIR_PU|=0x8;} else {P3_MOD_OC&=~0x8;P3_DIR_PU&=~0x8;}}\
+  _Pragma("restore")
 #define pgm_deinit() pgm_set_rst(1)
-#define fprintf(a,...) USBSerial_print(__VA_ARGS__)
 
 void icp_bitsend(__xdata uint32_t data, __xdata int len)
 {
@@ -178,37 +187,12 @@ uint32_t icp_read_flash(__xdata uint32_t addr, __xdata uint32_t len, __xdata uin
 
 uint32_t icp_write_flash(__xdata uint32_t addr, __xdata uint32_t len, __xdata uint8_t *__xdata data)
 {
-	int progress_printed = 0;
 	icp_send_command(CMD_WRITE_FLASH, addr);
 
-	for (int i = 0; i < len; i++) {
+	for (int i = 0; i < len; i++)
 		icp_write_byte(data[i], i == (len-1), 200, 50);
 
-		/* print some progress */
-		if (((i % 256) == 0) && len > CFG_FLASH_LEN) {
-			fprintf(stderr, ".");
-			progress_printed++;
-		}
-	}
-
-	if (progress_printed)
-		fprintf(stderr, "\n");
-
 	return addr + len;
-}
-
-void icp_dump_config()
-{
-	__xdata uint8_t cfg[CFG_FLASH_LEN];
-	icp_read_flash(CFG_FLASH_ADDR, CFG_FLASH_LEN, cfg);
-
-	//fprintf(stderr, "MCU Boot select:\t%s\n", cfg[0] & 0x80 ? "APROM" : "LDROM");
-	USBSerial_print("MCU Boot select:\t");
-  USBSerial_println(cfg[0] & 0x80 ? "APROM" : "LDROM");
-
-	int ldrom_size = (7 - (cfg[1] & 0x7)) * 1024;
-	fprintf(stderr, "LDROM size:\t\t%d Bytes\n", ldrom_size);
-	fprintf(stderr, "APROM size:\t\t%d Bytes\n", FLASH_SIZE - ldrom_size);
 }
 
 void icp_mass_erase(void)
@@ -227,6 +211,10 @@ void setup() {
   pinMode(14,OUTPUT);
   P3_MOD_OC|=0x38;  //DAT RST and CLK output only
   P3_DIR_PU|=0x38;
+#if TRIGGER > 0
+  pinMode(TRIGGER,OUTPUT);
+  digitalWrite(TRIGGER,LOW);
+#endif
 }
 
 void dump(uint8_t *p,size_t len) {
@@ -248,11 +236,29 @@ int readTimeout(int msTimeout) {
   return -1;
 }
 
+bool inProg=false;
+__xdata unsigned long tStartProg=0;
+__xdata int ldRomSize;
+
 void loop() {
   int i;
   __xdata static uint8_t buf[128];
 
   P14=(millis()&0x3FF)<50;
+
+  if (inProg && millis()-tStartProg>1000) {
+    inProg=false;
+    tStartProg=0;
+
+    icp_exit();
+    pgm_deinit();
+  }
+
+  if (digitalRead(32)==LOW) {////////////////
+    dump(buf,5);
+    delay(100);
+    while (digitalRead(32)==LOW);
+  }
 
   if (!USBSerial_available()) return;
 
@@ -277,35 +283,46 @@ void loop() {
   if (cmd=='W') {
     int len=mem=='C'?5:sizeof buf;
 
-    for (i=0;i<len;i++)
-      buf[i]=readTimeout(20);    
+    for (i=0;i<len;i++) {
+      int n=readTimeout(1000);    
+      if (n<0) return;
+      buf[i]=n;
+    }
   }
 
-  clkDelay=SLOW;
+  if (!inProg) {
+    clkDelay=SLOW;
 
-  pgm_dat_dir(1);
-  pgm_set_dat(0);
-  pgm_set_clk(0);
-  pgm_set_rst(0);
+    pgm_dat_dir(1);
+    pgm_set_dat(0);
+    pgm_set_clk(0);
+    pgm_set_rst(0);
+    delay(12);
 
-  icp_init();
-  clkDelay=FAST;
+    icp_init();
+    clkDelay=FAST;
 
-  usleep(120);
+    usleep(120);
 
-  //TODO: gestiore errori; controllo dimensioni APROM e LDROM
+    //TODO: gestiore errori; controllo dimensioni APROM e LDROM
 
-  uint16_t devid = icp_read_device_id();
-  uint8_t cid = icp_read_cid();
+    uint16_t devid = icp_read_device_id();
+    uint8_t cid = icp_read_cid();
 
-  if (cid!=NUVOTON_CID || devid!=N76E003_DEVID) {
-    return;
+    if (/*cid!=NUVOTON_CID ||*/ devid!=N76E003_DEVID) {
+      USBSerial_write(0xFF);
+      return;
+    }
+
+    __xdata uint8_t cfg1;
+    icp_read_flash(CFG_FLASH_ADDR+1, 1, &cfg1);
+
+    ldRomSize=(7-(cfg1&7))*1024;
+    if (ldRomSize>4*1024) ldRomSize=4*1024;
+
+    inProg=true;
+    tStartProg=millis();
   }
-
-  __xdata uint8_t cfg1;
-  icp_read_flash(CFG_FLASH_ADDR+1, 1, &cfg1);
-  int ldRomSize=(7-(cfg1&7))*1024;
-  if (ldRomSize>4*1024) ldRomSize=4*1024;
 
   int len=0;
 
@@ -318,19 +335,24 @@ void loop() {
   switch (cmd) {
     case 'X':
       icp_mass_erase();
+      USBSerial_write(0);
       break;
     case 'R':
       icp_read_flash(addr, len, buf);
-      for (i=0;i<len;i+=32) {
-        USBSerial_print_n(buf+i,len-i<32?len:32);
-        USBSerial_flush();
-      }
+      USBSerial_write(0);
+      USBSerial_print_n(buf,len);
       break;
     case 'W':
+      icp_page_erase(addr);
+      usleep(200);
+#if TRIGGER>0
+      digitalWrite(TRIGGER,HIGH);
+#endif
       icp_write_flash(addr,len,buf);
+#if TRIGGER>0
+      digitalWrite(TRIGGER,LOW);
+#endif
+      USBSerial_write(0);
       break;
   }
-
-  icp_exit();
-  pgm_deinit();
 }

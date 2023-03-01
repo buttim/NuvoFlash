@@ -63,13 +63,9 @@ bool selectSerialPort(size_t len,char portName[len]) {
 }
 
 bool readBlock(uint8_t mem,int address,size_t len,uint8_t buf[len]) {
-  uint8_t err, cmd[4];
+  uint8_t err, cmd[4]={'R',mem,address>>8,address};
   
-  cmd[0]='R';
-  cmd[1]=mem;
-  cmd[2]=address>>8;
-  cmd[3]=address;
-  sp_blocking_write(port,cmd,4,500);
+  sp_blocking_write(port,cmd,mem=='C'?2:4,500);
   int nBytesRead=sp_blocking_read(port,&err,1,500);
   if (nBytesRead!=1) {
     fprintf(stderr,"Programmer is not responding\n");
@@ -87,38 +83,70 @@ bool readBlock(uint8_t mem,int address,size_t len,uint8_t buf[len]) {
   return true;
 }
 
-bool writeBlock(int address,size_t len,const uint8_t buf[len],bool isLDROM) {
-  //TODO
+bool writeBlock(uint8_t mem,int address,size_t len,const uint8_t buf[len]) {
+  uint8_t err, cmd[4]={'W',mem,address>>8,address};
+
+  sp_blocking_write(port,cmd,mem=='C'?2:4,500);
+  sp_blocking_write(port,buf,len,500);
+  int nBytesRead=sp_blocking_read(port,&err,1,500);
+  if (nBytesRead!=1) {
+    fprintf(stderr,"Programmer is not responding\n");
+    return false;
+  }
+  if (err!=0) {
+    fprintf(stderr,"Programmer returned error code %d\n",err);
+    return false;
+  }
   return true;
 }
 
-void readAPROM(const char *filename) {
+void readROM(const char *filename,uint8_t mem) {
   FILE *f=fopen(filename,"wb");
   if (f==NULL) {
     fprintf(stderr,"Cannot write to file %s\n",filename);
     exit(1);
   }
   for (int i=0;i<18*1024;i+=PAGE_SIZE) {
-    if (!readBlock('A',i,PAGE_SIZE,buf))
+    if (!readBlock(mem,i,PAGE_SIZE,buf))
       break;
-    fwrite(buf,PAGE_SIZE,1,f);
+    fwrite(buf,1,PAGE_SIZE,f);
   }
   fclose(f);
 }
 
+void writeROM(const char *filename,uint8_t mem) {
+  FILE *f=fopen(filename,"rb");
+  if (f==NULL) {
+    fprintf(stderr,"Cannot read from file %s\n",filename);
+    exit(1);
+  }
+  for (int i=0;i<18*1024;i+=PAGE_SIZE) {
+    int n=fread(buf,1,PAGE_SIZE,f);
+    if (n==0) break;
+    if (!writeBlock(mem,i,PAGE_SIZE,buf))
+      break;
+    if (n!=PAGE_SIZE) break;
+  }
+  fclose(f);
+}
+
+void readAPROM(const char *filename) {
+  readROM(filename,'A');
+}
+
 void readLDROM(const char *filename) {
-  //TODO
+  readROM(filename,'L');
 }
 
 void writeAPROM(const char *filename) {
-  //TODO
+  writeROM(filename,'A');
 }
 
 void writeLDROM(const char *filename) {
-  //TODO
+  writeROM(filename,'L');
 }
 
-void readConfig() {
+void readConfig(uint8_t cfg[]) {
   if (!readBlock('C',0,5,buf)) return;
   for (int i=0;i<5;i++) 
     printf("%02X",buf[i]);
@@ -126,7 +154,10 @@ void readConfig() {
 }
 
 void writeConfig(const uint8_t cfg[]) {
-  writeBlock(0xC0000,5,cfg,false);
+  //~ for (int i=0;i<5;i++)
+    //~ printf("%02X ",cfg[i]);
+  //~ putchar('\n');
+  writeBlock('C',0,5,cfg);
 }
 
 void massErase() {
@@ -187,7 +218,7 @@ int main(int argc, char *argv[]) {
     usage();
   }
   
-  if ((mem!=CONFIG || writeOpt) && argc!=1 && optind!=argc-1) {
+  if (!massEraseOpt && (mem!=CONFIG || writeOpt) && argc!=1 && optind!=argc-1) {
     fputs("Missing arguments\n",stderr);
     usage();
   }
@@ -220,7 +251,7 @@ int main(int argc, char *argv[]) {
   if (readOpt) 
     switch (mem) {
       case CONFIG:
-	readConfig();
+	readConfig(buf);
 	break;
       case APROM:
 	readAPROM(argv[argc-1]);
