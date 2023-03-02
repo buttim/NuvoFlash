@@ -15,9 +15,8 @@
 typedef enum { APROM, LDROM, CONFIG } Mem;
 
 bool quiet = false;
-Mem mem;
 struct sp_port *port;
-char filename[MAX_PATH];
+
 void usage() {
   fputs("Usage: nuvoflash <options> [file.bin|hex_value]\n", stderr);
   fputs("<mem> must be one of APROM, LDROM, CONFIG\n", stderr);
@@ -238,6 +237,7 @@ void massErase() {
 }
 
 int main(int argc, char *argv[]) {
+  Mem mem;
   char opt;
   int opt_index, ldromSize = 0, apromSize = 18 * 1024;
   uint8_t buf[PAGE_SIZE];

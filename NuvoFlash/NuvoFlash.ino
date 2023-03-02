@@ -1,3 +1,6 @@
+/* ICP programmer for Nuvoton N76E003 MCUs using a CH552 USB board.
+   This work is heavily based on steve-m's previous work (https://github.com/steve-m/N76E003-playground)
+*/
 #include "ch554.h"
 #include <stdbool.h>
 #include <stdint.h>
