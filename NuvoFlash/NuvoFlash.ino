@@ -307,7 +307,7 @@ void loop() {
 
     usleep(120);
 
-    //TODO: gestiore errori; controllo dimensioni APROM e LDROM
+    //TODO: controllo dimensioni APROM e LDROM
 
     uint16_t devid = icp_read_device_id();
     uint8_t cid = icp_read_cid();
@@ -333,6 +333,7 @@ void loop() {
     case 'C': len=CFG_FLASH_LEN; addr=CFG_FLASH_ADDR; break;
     case 'L': addr+=18*1024-ldRomSize; //FALL THROUGH!
     case 'A': len=sizeof buf; break;
+    default: USBSerial_write(100); return;
   }
 
   switch (cmd) {

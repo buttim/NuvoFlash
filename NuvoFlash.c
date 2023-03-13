@@ -127,7 +127,7 @@ void readROM(const char *filename, uint8_t mem, int size) {
       fclose(f);
       exit(1);
     }
-    if (!quiet)
+    if (!quiet && isatty(fileno(stdout)))
       printf("Read: %5d\r", i);
     fwrite(buf, 1, PAGE_SIZE, f);
   }
@@ -148,7 +148,7 @@ void writeROM(const char *filename, uint8_t mem) {
       int n = fread(buf, 1, PAGE_SIZE, f);
       if (n == 0)
         break;
-      if (!quiet)
+      if (!quiet && isatty(fileno(stdout)))
         printf("%s: %5d\r", verify ? "Verify" : "Write", i);
       bool ok;
       if (verify) {
@@ -196,8 +196,7 @@ void writeLDROM(const char *filename, int ldromSize) {
 }
 
 void readConfig(uint8_t cfg[]) {
-  uint8_t buf[5];
-  if (!readBlock('C', 0, 5, buf))
+  if (!readBlock('C', 0, 5, cfg))
     exit(2);
 }
 
